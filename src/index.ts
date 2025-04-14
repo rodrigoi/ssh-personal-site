@@ -171,7 +171,7 @@ const createPacket = (payload: Uint8Array): Uint8Array => {
  * [32-bit length][8-bit padding][...payload...][...padding...]
  *   4 bytes         1 byte        variable       variable
  */
-const parsePacket = (
+export const parsePacket = (
   data: Uint8Array
 ): { payload: Uint8Array; padding: Uint8Array } | null => {
   if (data.length < 4) return null;
@@ -201,7 +201,10 @@ const parsePacket = (
   const payload = data.slice(5, 5 + payloadLength);
 
   // Extract the padding
-  const padding = data.slice(packetLength + 4);
+  const padding = data.slice(
+    5 + payloadLength,
+    5 + payloadLength + paddingLength
+  );
 
   return { payload, padding };
 };

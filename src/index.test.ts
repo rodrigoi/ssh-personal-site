@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { concatUint8Arrays, stringToUint8Array, writeUint32BE } from "./index";
+import {
+  concatUint8Arrays,
+  parsePacket,
+  stringToUint8Array,
+  writeUint32BE,
+} from "./index";
 
 describe("concatUint8Arrays", () => {
   test("should concatenate two arrays", () => {
@@ -142,5 +147,124 @@ describe("writeUint32BE", () => {
   test("should handle numbers with maximum value in each byte", () => {
     const result = writeUint32BE(0xff000000);
     expect(result).toEqual(new Uint8Array([0xff, 0x00, 0x00, 0x00]));
+  });
+});
+
+describe("parsePacket", () => {
+  test("should parse a simple packet correctly", () => {
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    const paddingLength = 4;
+    const padding = new Uint8Array([0, 0, 0, 0]);
+    const packet = concatUint8Arrays(
+      writeUint32BE(payload.length + paddingLength + 1),
+      new Uint8Array([paddingLength]),
+      payload,
+      padding
+    );
+
+    const result = parsePacket(packet);
+    expect(result).not.toBeNull();
+    expect(result!.payload).toEqual(payload);
+    expect(result!.padding).toEqual(padding);
+  });
+
+  test("should handle minimum packet size", () => {
+    const payload = new Uint8Array([]);
+    const paddingLength = 4;
+    const padding = new Uint8Array([0, 0, 0, 0]);
+    const packet = concatUint8Arrays(
+      writeUint32BE(payload.length + paddingLength + 1),
+      new Uint8Array([paddingLength]),
+      payload,
+      padding
+    );
+
+    const result = parsePacket(packet);
+    expect(result).not.toBeNull();
+    expect(result!.payload).toEqual(payload);
+    expect(result!.padding).toEqual(padding);
+  });
+
+  test("should handle maximum padding length", () => {
+    const payload = new Uint8Array([1, 2, 3]);
+    const paddingLength = 255;
+    const padding = new Uint8Array(255).fill(0);
+    const packet = concatUint8Arrays(
+      writeUint32BE(payload.length + paddingLength + 1),
+      new Uint8Array([paddingLength]),
+      payload,
+      padding
+    );
+
+    const result = parsePacket(packet);
+    expect(result).not.toBeNull();
+    expect(result!.payload).toEqual(payload);
+    expect(result!.padding).toEqual(padding);
+  });
+
+  test("should handle non-zero padding values", () => {
+    const payload = new Uint8Array([1, 2, 3]);
+    const paddingLength = 4;
+    const padding = new Uint8Array([0xff, 0xaa, 0x55, 0x00]);
+    const packet = concatUint8Arrays(
+      writeUint32BE(payload.length + paddingLength + 1),
+      new Uint8Array([paddingLength]),
+      payload,
+      padding
+    );
+
+    const result = parsePacket(packet);
+    expect(result).not.toBeNull();
+    expect(result!.payload).toEqual(payload);
+    expect(result!.padding).toEqual(padding);
+  });
+
+  test("should return null for incomplete packet", () => {
+    const incompletePacket = new Uint8Array([0, 0, 0]); // Less than 4 bytes
+    const result = parsePacket(incompletePacket);
+    expect(result).toBeNull();
+  });
+
+  test("should return null for invalid packet length", () => {
+    const invalidPacket = concatUint8Arrays(
+      writeUint32BE(3), // Length less than minimum valid size
+      new Uint8Array([0])
+    );
+    const result = parsePacket(invalidPacket);
+    expect(result).toBeNull();
+  });
+
+  test("should handle large payload", () => {
+    const payload = new Uint8Array(1000).fill(0xaa);
+    const paddingLength = 4;
+    const padding = new Uint8Array([0, 0, 0, 0]);
+    const packet = concatUint8Arrays(
+      writeUint32BE(payload.length + paddingLength + 1),
+      new Uint8Array([paddingLength]),
+      payload,
+      padding
+    );
+
+    const result = parsePacket(packet);
+    expect(result).not.toBeNull();
+    expect(result!.payload).toEqual(payload);
+    expect(result!.padding).toEqual(padding);
+  });
+
+  test("should handle packet with no payload", () => {
+    const payload = new Uint8Array([]);
+    const paddingLength = 8;
+    const padding = new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0]);
+    const packet = concatUint8Arrays(
+      writeUint32BE(payload.length + paddingLength + 1),
+      new Uint8Array([paddingLength]),
+      payload,
+      padding
+    );
+
+    const result = parsePacket(packet);
+    expect(result).not.toBeNull();
+    expect(result!.payload).toEqual(payload);
+    expect(result!.padding).toEqual(padding);
   });
 });
