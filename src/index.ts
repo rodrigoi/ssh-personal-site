@@ -70,7 +70,7 @@ const ALGORITHMS = {
 const sessions = new Map<any, Session>();
 
 // Write a 32-bit unsigned integer in big-endian order
-const writeUint32BE = (value: number): Uint8Array => {
+export const writeUint32BE = (value: number): Uint8Array => {
   const arr = new Uint8Array(4);
   arr[0] = (value >>> 24) & 0xff;
   arr[1] = (value >>> 16) & 0xff;
@@ -80,12 +80,12 @@ const writeUint32BE = (value: number): Uint8Array => {
 };
 
 // Convert a string to a Uint8Array
-const stringToUint8Array = (str: string): Uint8Array => {
+export const stringToUint8Array = (str: string): Uint8Array => {
   return new TextEncoder().encode(str);
 };
 
 // Concatenate multiple Uint8Arrays
-const concatUint8Arrays = (...arrays: Uint8Array[]): Uint8Array => {
+export const concatUint8Arrays = (...arrays: Uint8Array[]): Uint8Array => {
   const totalLength = arrays.reduce((acc, arr) => acc + arr.length, 0);
   const result = new Uint8Array(totalLength);
   let offset = 0;
@@ -166,6 +166,46 @@ const createPacket = (payload: Uint8Array): Uint8Array => {
   );
 };
 
+/**
+ * Parses SSH packet protocol messages
+ * [32-bit length][8-bit padding][...payload...][...padding...]
+ *   4 bytes         1 byte        variable       variable
+ */
+const parsePacket = (
+  data: Uint8Array
+): { payload: Uint8Array; padding: Uint8Array } | null => {
+  if (data.length < 4) return null;
+
+  /**
+   * Read the packet length. First 4 bytes in big-endian order.
+   * Big-endian order means that the most significant byte is at the lowest address.
+   * For example, the number 0x12345678 in big-endian order is 0x12 0x34 0x56 0x78.
+   * We use bitwise shifts to move each byte to the correct position and then combine them.
+   */
+  const packetLength =
+    (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+
+  // Check if the packet length is valid
+  if (packetLength < 4 || packetLength > data.length) return null;
+
+  // Read the padding length. Next byte
+  const paddingLength = data[4];
+
+  // Calculate the payload length
+  const payloadLength = packetLength - paddingLength - 1;
+
+  /**
+   * Extract the payload ex.
+   * Start at 5 because the first
+   */
+  const payload = data.slice(5, 5 + payloadLength);
+
+  // Extract the padding
+  const padding = data.slice(packetLength + 4);
+
+  return { payload, padding };
+};
+
 const CRLF = new Uint8Array([13, 10]); // \r\n
 const EOL = new Uint8Array([0]); // End of line
 
@@ -225,6 +265,16 @@ const server = Bun.listen({
           session.state = "kex";
           console.log(`KEXINIT message received`);
           return;
+        }
+      }
+
+      if (session.state === "kex") {
+        session.buffer = concatUint8Arrays(session.buffer, dataUint8Array);
+
+        let packet;
+        while ((packet = parsePacket(session.buffer))) {
+          const { payload, padding } = packet;
+          session.buffer = padding;
         }
       }
     },
