@@ -102,6 +102,7 @@ export class SSHSession {
   // Channel state
   private channels = new Map<number, Channel>();
   private nextServerChannel = 0;
+  private activeChannel: number | null = null; // Track the interactive channel
 
   constructor(socket: any, hostKeyPair: HostKeyPair) {
     this.socket = socket;
@@ -710,12 +711,16 @@ export class SSHSession {
   }
 
   /**
-   * Send "Hello World" message and close the channel
+   * Send "Hello World" message and wait for input
    */
   private sendHelloWorld(recipientChannel: number) {
     console.log("Sending Hello World message");
 
+    // Store the active channel for interaction
+    this.activeChannel = recipientChannel;
+
     // Send channel data with rainbow colors (ANSI escape codes)
+    // Add an empty second line for the status updates
     const message =
       "\x1b[91mH" +  // bright red
       "\x1b[93me" +  // bright yellow
@@ -728,37 +733,168 @@ export class SSHSession {
       "\x1b[93mr" +  // bright yellow
       "\x1b[92ml" +  // bright green
       "\x1b[96md" +  // bright cyan
-      "\x1b[0m\r\n"; // reset color
+      "\x1b[0m\r\n" + // reset color
+      "\r\n";        // empty line for status
     const writer = new PacketWriter();
     writer.writeUint8(SSH_MSG.CHANNEL_DATA);
     writer.writeUint32(recipientChannel);
     writer.writeString(message);
     this.sendPacket(writer.getBuffer());
 
-    // Send EOF
-    const writerEOF = new PacketWriter();
-    writerEOF.writeUint8(SSH_MSG.CHANNEL_EOF);
-    writerEOF.writeUint32(recipientChannel);
-    this.sendPacket(writerEOF.getBuffer());
-
-    // Close the channel
-    const writerClose = new PacketWriter();
-    writerClose.writeUint8(SSH_MSG.CHANNEL_CLOSE);
-    writerClose.writeUint32(recipientChannel);
-    this.sendPacket(writerClose.getBuffer());
-
-    console.log("Sent Hello World and closed channel");
+    console.log("Sent Hello World, waiting for input...");
   }
 
   /**
-   * Handle CHANNEL_DATA
+   * Update the status line (line below Hello World) with new text
+   */
+  private updateStatusLine(recipientChannel: number, text: string) {
+    // Use ANSI escape codes to:
+    // 1. Move cursor up one line: \x1b[1A
+    // 2. Clear the entire line: \x1b[2K
+    // 3. Return to beginning: \r
+    // 4. Write the new text
+    // 5. Move to next line: \r\n
+    const message = "\x1b[1A\x1b[2K\r" + text + "\r\n";
+
+    const writer = new PacketWriter();
+    writer.writeUint8(SSH_MSG.CHANNEL_DATA);
+    writer.writeUint32(recipientChannel);
+    writer.writeString(message);
+    this.sendPacket(writer.getBuffer());
+
+    console.log(`Updated status line: ${text}`);
+  }
+
+  /**
+   * Send animated "Goodbye" message with brightness pulse for 10 seconds, then close
+   */
+  private sendGoodbye(recipientChannel: number) {
+    console.log("Starting Goodbye animation");
+
+    // Clear the active channel to prevent further input
+    this.activeChannel = null;
+
+    // Animation parameters
+    const duration = 10000; // 10 seconds
+    const interval = 50;    // 50ms between frames (smooth animation)
+    const totalFrames = duration / interval; // 200 frames
+    let frame = 0;
+
+    // Start the brightness pulse animation
+    const animationInterval = setInterval(() => {
+      // Calculate brightness using sine wave for smooth pulsing
+      // Goes from 0 to 1 and back (one complete pulse cycle every ~2 seconds)
+      const phase = (frame / totalFrames) * Math.PI * 5; // 5 complete pulses over 10 seconds
+      const brightness = (Math.sin(phase) + 1) / 2; // Convert -1...1 to 0...1
+
+      // Create "Goodbye" with brightness based on sine wave
+      // Use 8 brightness levels from very dim to very bright
+      const level = Math.floor(brightness * 7);
+      let goodbye: string;
+
+      switch (level) {
+        case 0:
+          goodbye = "\x1b[2m\x1b[30mGoodbye\x1b[0m"; // very dim black
+          break;
+        case 1:
+          goodbye = "\x1b[2m\x1b[37mGoodbye\x1b[0m"; // dim white
+          break;
+        case 2:
+          goodbye = "\x1b[37mGoodbye\x1b[0m";        // normal white
+          break;
+        case 3:
+          goodbye = "\x1b[97mGoodbye\x1b[0m";        // bright white
+          break;
+        case 4:
+          goodbye = "\x1b[1m\x1b[97mGoodbye\x1b[0m"; // bold bright white
+          break;
+        case 5:
+          goodbye = "\x1b[1m\x1b[93mGoodbye\x1b[0m"; // bold bright yellow
+          break;
+        case 6:
+          goodbye = "\x1b[1m\x1b[91mGoodbye\x1b[0m"; // bold bright red
+          break;
+        default:
+          goodbye = "\x1b[1m\x1b[95mGoodbye\x1b[0m"; // bold bright magenta (peak)
+          break;
+      }
+
+      // Update the status line
+      const message = "\x1b[1A\x1b[2K\r" + goodbye + "\r\n";
+      const writer = new PacketWriter();
+      writer.writeUint8(SSH_MSG.CHANNEL_DATA);
+      writer.writeUint32(recipientChannel);
+      writer.writeString(message);
+      this.sendPacket(writer.getBuffer());
+
+      frame++;
+    }, interval);
+
+    // After 10 seconds, stop animation and close channel
+    setTimeout(() => {
+      clearInterval(animationInterval);
+
+      // Send final bright goodbye
+      const finalGoodbye = "\x1b[1m\x1b[95mGoodbye\x1b[0m";
+      const message = "\x1b[1A\x1b[2K\r" + finalGoodbye + "\r\n";
+      const writer = new PacketWriter();
+      writer.writeUint8(SSH_MSG.CHANNEL_DATA);
+      writer.writeUint32(recipientChannel);
+      writer.writeString(message);
+      this.sendPacket(writer.getBuffer());
+
+      // Send EOF
+      const writerEOF = new PacketWriter();
+      writerEOF.writeUint8(SSH_MSG.CHANNEL_EOF);
+      writerEOF.writeUint32(recipientChannel);
+      this.sendPacket(writerEOF.getBuffer());
+
+      // Close the channel
+      const writerClose = new PacketWriter();
+      writerClose.writeUint8(SSH_MSG.CHANNEL_CLOSE);
+      writerClose.writeUint32(recipientChannel);
+      this.sendPacket(writerClose.getBuffer());
+
+      console.log("Animation complete, channel closed");
+    }, duration);
+  }
+
+  /**
+   * Handle CHANNEL_DATA (user keyboard input)
    */
   private handleChannelData(payload: Buffer) {
     const reader = new PacketReader(payload, 1);
     const recipientChannel = reader.readUint32();
     const data = reader.readString();
 
-    console.log(`Received channel data: ${data.toString("utf8")}`);
+    console.log(`Received channel data: ${Buffer.from(data).toString("hex")}`);
+
+    // Only handle input if this is the active channel
+    if (recipientChannel !== this.activeChannel) {
+      return;
+    }
+
+    const input = data.toString();
+
+    // Detect arrow keys (escape sequences)
+    // Arrow keys send: ESC [ <letter>
+    // Right: \x1b[C or \x1b[OC
+    // Left: \x1b[D or \x1b[OD
+    // Up: \x1b[A or \x1b[OA
+    // Down: \x1b[B or \x1b[OB
+
+    if (input === "\x1b[C" || input === "\x1b[OC") {
+      this.updateStatusLine(recipientChannel, "\x1b[92mright arrow\x1b[0m"); // green
+    } else if (input === "\x1b[D" || input === "\x1b[OD") {
+      this.updateStatusLine(recipientChannel, "\x1b[93mleft arrow\x1b[0m");  // yellow
+    } else if (input === "\x1b[A" || input === "\x1b[OA") {
+      this.updateStatusLine(recipientChannel, "\x1b[94mup arrow\x1b[0m");    // blue
+    } else if (input === "\x1b[B" || input === "\x1b[OB") {
+      this.updateStatusLine(recipientChannel, "\x1b[91mdown arrow\x1b[0m");  // red
+    } else {
+      // Any other key - send rainbow goodbye and close
+      this.sendGoodbye(recipientChannel);
+    }
   }
 
   /**
