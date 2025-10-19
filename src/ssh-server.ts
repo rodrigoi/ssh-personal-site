@@ -104,6 +104,10 @@ export class SSHSession {
   private nextServerChannel = 0;
   private activeChannel: number | null = null; // Track the interactive channel
 
+  // Terminal dimensions (defaults for standard terminal)
+  private termWidth: number = 80;
+  private termHeight: number = 24;
+
   constructor(socket: any, hostKeyPair: HostKeyPair) {
     this.socket = socket;
     this.hostKeyPair = hostKeyPair;
@@ -684,7 +688,7 @@ export class SSHSession {
   }
 
   /**
-   * Handle CHANNEL_REQUEST (pty-req, shell, exec, etc.)
+   * Handle CHANNEL_REQUEST (pty-req, shell, exec, window-change, etc.)
    */
   private handleChannelRequest(payload: Buffer) {
     const reader = new PacketReader(payload, 1);
@@ -695,6 +699,36 @@ export class SSHSession {
     console.log(
       `Channel request: channel=${recipientChannel}, type=${requestType}, want_reply=${wantReply}`
     );
+
+    // Parse PTY-REQ to get initial terminal dimensions
+    if (requestType === "pty-req") {
+      const termType = reader.readStringUTF8();
+      const widthChars = reader.readUint32();
+      const heightRows = reader.readUint32();
+      const widthPixels = reader.readUint32();
+      const heightPixels = reader.readUint32();
+      // Terminal modes follow, but we don't need them
+
+      this.termWidth = widthChars;
+      this.termHeight = heightRows;
+
+      console.log(`PTY requested: ${termType}, ${widthChars}x${heightRows} (${widthPixels}x${heightPixels}px)`);
+    }
+
+    // Parse WINDOW-CHANGE to handle terminal resize
+    if (requestType === "window-change") {
+      const widthChars = reader.readUint32();
+      const heightRows = reader.readUint32();
+      const widthPixels = reader.readUint32();
+      const heightPixels = reader.readUint32();
+
+      this.termWidth = widthChars;
+      this.termHeight = heightRows;
+
+      console.log(`Window resized: ${widthChars}x${heightRows} (${widthPixels}x${heightPixels}px)`);
+
+      // TODO: Optionally redraw the UI when window changes
+    }
 
     // Accept all channel requests
     if (wantReply) {
@@ -711,7 +745,22 @@ export class SSHSession {
   }
 
   /**
-   * Send "Hello World" message and wait for input
+   * Calculate center position for text based on current terminal dimensions
+   */
+  private calculateCenter(text: string): { row: number; col: number } {
+    // Remove ANSI escape codes to get actual text length
+    const plainText = text.replace(/\x1b\[[0-9;]*m/g, '');
+    const textLength = plainText.length;
+
+    // Calculate center position
+    const centerRow = Math.floor(this.termHeight / 2);
+    const centerCol = Math.floor((this.termWidth - textLength) / 2);
+
+    return { row: centerRow, col: Math.max(1, centerCol) };
+  }
+
+  /**
+   * Send "Hello World" message centered in terminal and wait for input
    */
   private sendHelloWorld(recipientChannel: number) {
     console.log("Sending Hello World message");
@@ -719,9 +768,8 @@ export class SSHSession {
     // Store the active channel for interaction
     this.activeChannel = recipientChannel;
 
-    // Send channel data with rainbow colors (ANSI escape codes)
-    // Add an empty second line for the status updates
-    const message =
+    // Build rainbow "Hello World" with ANSI colors
+    const rainbowHelloWorld =
       "\x1b[91mH" +  // bright red
       "\x1b[93me" +  // bright yellow
       "\x1b[92ml" +  // bright green
@@ -733,28 +781,73 @@ export class SSHSession {
       "\x1b[93mr" +  // bright yellow
       "\x1b[92ml" +  // bright green
       "\x1b[96md" +  // bright cyan
-      "\x1b[0m\r\n" + // reset color
-      "\r\n";        // empty line for status
+      "\x1b[0m";     // reset color
+
+    // Dynamically calculate center position based on terminal size
+    const { row, col } = this.calculateCenter("Hello World");
+
+    const message =
+      "\x1b[2J" +              // Clear entire screen
+      "\x1b[H" +               // Move cursor to home (1,1)
+      "\x1b[?25l" +            // Hide cursor
+      `\x1b[${row};${col}H` +  // Position at calculated center
+      rainbowHelloWorld;       // The rainbow text
+
     const writer = new PacketWriter();
     writer.writeUint8(SSH_MSG.CHANNEL_DATA);
     writer.writeUint32(recipientChannel);
     writer.writeString(message);
     this.sendPacket(writer.getBuffer());
 
-    console.log("Sent Hello World, waiting for input...");
+    console.log(`Sent centered Hello World at ${row},${col} (terminal: ${this.termWidth}x${this.termHeight})`);
   }
 
   /**
-   * Update the status line (line below Hello World) with new text
+   * Update arrow display with directional positioning
    */
   private updateStatusLine(recipientChannel: number, text: string) {
-    // Use ANSI escape codes to:
-    // 1. Move cursor up one line: \x1b[1A
-    // 2. Clear the entire line: \x1b[2K
-    // 3. Return to beginning: \r
-    // 4. Write the new text
-    // 5. Move to next line: \r\n
-    const message = "\x1b[1A\x1b[2K\r" + text + "\r\n";
+    // Strip ANSI codes to detect which arrow
+    const plainText = text.replace(/\x1b\[[0-9;]*m/g, '');
+    const textLength = plainText.length;
+
+    // Calculate position based on arrow direction
+    let row: number;
+    let col: number;
+
+    if (plainText.includes("up arrow")) {
+      // Top center
+      row = 1;
+      col = Math.floor((this.termWidth - textLength) / 2);
+    } else if (plainText.includes("down arrow")) {
+      // Bottom center
+      row = this.termHeight;
+      col = Math.floor((this.termWidth - textLength) / 2);
+    } else if (plainText.includes("left arrow")) {
+      // Middle left
+      row = Math.floor(this.termHeight / 2);
+      col = 1;
+    } else if (plainText.includes("right arrow")) {
+      // Middle right
+      row = Math.floor(this.termHeight / 2);
+      col = this.termWidth - textLength;
+    } else {
+      // Default: center
+      const center = this.calculateCenter(plainText);
+      row = center.row;
+      col = center.col;
+    }
+
+    // Clear screen and redraw both "Hello World" and the arrow label
+    const helloWorld = "\x1b[91mH\x1b[93me\x1b[92ml\x1b[96ml\x1b[94mo\x1b[0m \x1b[95mW\x1b[91mo\x1b[93mr\x1b[92ml\x1b[96md\x1b[0m";
+    const { row: helloRow, col: helloCol } = this.calculateCenter("Hello World");
+
+    const message =
+      "\x1b[2J" +                     // Clear entire screen
+      "\x1b[H" +                      // Home cursor
+      `\x1b[${helloRow};${helloCol}H` + // Position for Hello World
+      helloWorld +                    // Draw Hello World
+      `\x1b[${row};${col}H` +        // Position for arrow label
+      text;                           // Draw arrow label
 
     const writer = new PacketWriter();
     writer.writeUint8(SSH_MSG.CHANNEL_DATA);
@@ -762,7 +855,7 @@ export class SSHSession {
     writer.writeString(message);
     this.sendPacket(writer.getBuffer());
 
-    console.log(`Updated status line: ${text}`);
+    console.log(`Updated arrow at ${row},${col}: ${plainText}`);
   }
 
   /**
@@ -773,6 +866,14 @@ export class SSHSession {
 
     // Clear the active channel to prevent further input
     this.activeChannel = null;
+
+    // Clear the entire screen first (removes Hello World and arrows)
+    const clearScreen = "\x1b[2J\x1b[H";
+    const writerClear = new PacketWriter();
+    writerClear.writeUint8(SSH_MSG.CHANNEL_DATA);
+    writerClear.writeUint32(recipientChannel);
+    writerClear.writeString(clearScreen);
+    this.sendPacket(writerClear.getBuffer());
 
     // Animation parameters
     const duration = 10000; // 10 seconds
@@ -819,8 +920,15 @@ export class SSHSession {
           break;
       }
 
-      // Update the status line
-      const message = "\x1b[1A\x1b[2K\r" + goodbye + "\r\n";
+      // Calculate center position for "Goodbye" (replaces where Hello World was)
+      const { row, col } = this.calculateCenter("Goodbye");
+
+      const message =
+        `\x1b[${row};1H` +    // Move to center row
+        "\x1b[2K" +           // Clear line
+        `\x1b[${row};${col}H` +  // Position at calculated center
+        goodbye;              // The brightness-pulsing text
+
       const writer = new PacketWriter();
       writer.writeUint8(SSH_MSG.CHANNEL_DATA);
       writer.writeUint32(recipientChannel);
@@ -834,9 +942,19 @@ export class SSHSession {
     setTimeout(() => {
       clearInterval(animationInterval);
 
-      // Send final bright goodbye
+      // Send final bright goodbye and show cursor
       const finalGoodbye = "\x1b[1m\x1b[95mGoodbye\x1b[0m";
-      const message = "\x1b[1A\x1b[2K\r" + finalGoodbye + "\r\n";
+
+      // Calculate dynamic center position for final goodbye
+      const { row, col } = this.calculateCenter("Goodbye");
+
+      const message =
+        `\x1b[${row};1H` +  // Move to center row
+        "\x1b[2K" +         // Clear line
+        `\x1b[${row};${col}H` +  // Position at calculated center
+        finalGoodbye +             // Final bright text
+        "\x1b[?25h";               // Show cursor
+
       const writer = new PacketWriter();
       writer.writeUint8(SSH_MSG.CHANNEL_DATA);
       writer.writeUint32(recipientChannel);
